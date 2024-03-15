@@ -9,14 +9,22 @@
 
 #include <nds/arm9/dldi.h>
 
+#include "font.h"
+
 const char *nds_filename;
 uint8_t *io_buffer;
 int io_buffer_size;
 int io_read_offset = 0;
 bool lookup_cache_enabled = true;
 
-static inline uint32_t my_rand(void)
-{
+static PrintConsole tpConsole;
+static PrintConsole btConsole;
+
+static int bg;
+static int bgSub;
+
+
+static inline uint32_t my_rand(void) {
     static uint32_t seed = 0;
 
     seed = seed * 0xFDB97531 + 0x2468ACE;
@@ -28,7 +36,7 @@ static inline uint32_t get_ticks(void) {
     return TIMER0_DATA | (TIMER1_DATA << 16);
 }
 
-static void benchmark_read(bool sequential) {
+ITCM_CODE static void benchmark_read(bool sequential) {
     FILE *file = fopen(nds_filename, "rb");
     if (file == NULL) {
         printf("\x1b[41mCould not open '%s'!\n", nds_filename);
@@ -89,7 +97,7 @@ static void benchmark_read(bool sequential) {
     fclose(file);
 }
 
-static void benchmark_write(bool sequential) {
+ITCM_CODE static void benchmark_write(bool sequential) {
     FILE *file = fopen(nds_filename, "r+b");
     int file_offset = 8*1024*1024;
     if (file == NULL) {
@@ -120,11 +128,10 @@ static void benchmark_write(bool sequential) {
         uint32_t reads = 0;
         if (sequential) {
             int pos = 0;
-	    while (reads < reads_count) {
-		if (pos == 0)
-	                fseek(file, io_read_offset, SEEK_SET);
+			while (reads < reads_count) {
+			if (pos == 0)fseek(file, io_read_offset, SEEK_SET);
                 fwrite(io_buffer, curr_size, 1, file);
-		pos = (pos + curr_size) & 0x1FFFFF;
+				pos = (pos + curr_size) & 0x1FFFFF;
                 reads++;
             }
         } else {
@@ -165,7 +172,7 @@ static bool run_menu(int options_count, int *selection) {
 
     while (1) {
         if (last_selection != *selection) {
-            printf("\x1b[2J"); // Clear console
+            consoleClear();
             for (int i = 0; i < options_count; i++) {
                 printf("\x1b[%dC\x1b[46m%c\x1b[39m %s\n", menu_left, i == *selection ? '>' : ' ', options[i]);
             }
@@ -198,22 +205,45 @@ static void press_start_to_continue(void) {
     }
 }
 
+void CustomConsoleInit() {
+	videoSetMode(MODE_0_2D);
+	videoSetModeSub(MODE_0_2D);
+	vramSetBankA (VRAM_A_MAIN_BG);
+	vramSetBankC (VRAM_C_SUB_BG);
+	
+	bg = bgInit(3, BgType_Bmp8, BgSize_B8_256x256, 1, 0);
+	bgSub = bgInitSub(3, BgType_Bmp8, BgSize_B8_256x256, 1, 0);
+		
+	consoleInit(&btConsole, 3, BgType_Text4bpp, BgSize_T_256x256, 20, 0, false, false);
+	consoleInit(&tpConsole, 3, BgType_Text4bpp, BgSize_T_256x256, 20, 0, true, false);
+		
+	ConsoleFont font;
+	font.gfx = (u16*)fontTiles;
+	font.pal = (u16*)fontPal;
+	font.numChars = 95;
+	font.numColors =  fontPalLen / 2;
+	font.bpp = 4;
+	font.asciiOffset = 32;
+	font.convertSingleColor = true;
+	consoleSetFont(&btConsole, &font);
+	consoleSetFont(&tpConsole, &font);
+			
+	consoleSelect(&btConsole);
+}
+
 int main(int argc, char **argv) {
-    consoleDemoInit();
+    CustomConsoleInit();
 
-    printf("\x1b[2J"); // Clear console
-
-    //      01234567890123456789012345678901
+    consoleClear();
+	
+	//      01234567890123456789012345678901
     printf("  \x1b[43m*\x1b[39m SD file system benchmark \x1b[43m*\x1b[39m\n");
     printf("\x1b[37mDLDI: %s\x1b[39m\n\n", io_dldi_data->friendlyName);
 
     // set window
-    consoleSetWindow(NULL, 0, 3, 32, 25);
-
-    if (argc <= 0 || argv[0][0] == 0) {
-        printf("\x1b[41mCould not find argv!\n");
-        goto exit;
-    }
+    // consoleSetWindow(NULL, 0, 3, 32, 25);
+	consoleSetWindow(&btConsole, 0, 3, 32, 25);
+	consoleSetWindow(&tpConsole, 0, 3, 32, 25);
 
     io_buffer_size = 2*1024*1024;
     io_buffer = malloc(io_buffer_size);
@@ -222,8 +252,28 @@ int main(int argc, char **argv) {
         goto exit;
     }
 
-    fatInitDefault();
-    nds_filename = argv[0];
+    if (!fatInitDefault()) {
+		printf("\x1b[41mFAT Init Failed!\n");
+		goto exit;
+	}
+	
+    /*if (argc <= 0 || argv[0][0] == 0) {
+		// arg not passed. Try and use external file instead.
+        nds_filename = "/pad.bin";
+		// printf("\x1b[41mCould not find argv!\n");
+        // goto exit;
+    } else {
+		nds_filename = argv[0];
+	}*/
+	
+	// NitroFS support removed until nds file overwrite bug is fixed
+	nds_filename = "/pad.bin";
+	
+	if (access(nds_filename, F_OK) != 0) {	
+		printf("\x1b[41mCould not find pad.bin!\n");
+		goto exit;
+	}
+	
 
     TIMER0_DATA = 0;
     TIMER1_DATA = 0;
